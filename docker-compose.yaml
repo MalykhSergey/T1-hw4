@@ -1,0 +1,29 @@
+name: t1-auth
+services:
+  postgres:
+    image: postgres:latest
+    container_name: postgres_container
+    environment:
+      POSTGRES_DB: security
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: root
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U postgres" ]
+      interval: 2s
+      timeout: 5s
+      retries: 10
+
+  auth:
+    build: .
+    container_name: auth
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      - DB_URL=postgres:5432/security
+      - JWT_SECRET=L5l+pVRV3DZPNWXtkRkhYmZcFMuZTfIvAItkwBbY
+    ports:
+      - "8080:8080"
+    command: java -jar app.jar
