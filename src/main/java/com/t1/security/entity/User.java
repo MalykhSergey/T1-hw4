@@ -24,6 +24,17 @@ public class User implements UserDetails {
     @Column(name = "role")
     private Set<Role> roles;
 
+    @OneToOne(mappedBy = "user")
+    private AuthCertificate authCertificate;
+
+    public AuthCertificate getAuthCertificate() {
+        return authCertificate;
+    }
+
+    public void setAuthCertificate(AuthCertificate authCertificate) {
+        this.authCertificate = authCertificate;
+    }
+
     public User() {
     }
 

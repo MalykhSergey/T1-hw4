@@ -2,113 +2,106 @@ package com.t1.security.services;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.t1.security.dto.LoginDTO;
-import com.t1.security.dto.RegisterDTO;
-import com.t1.security.dto.TokensDTO;
-import com.t1.security.dto.UserDTO;
-import com.t1.security.entity.RefreshToken;
+import com.t1.security.dto.*;
 import com.t1.security.entity.User;
-import com.t1.security.repository.RefreshTokenRepository;
 import com.t1.security.repository.UserRepository;
-import io.jsonwebtoken.Jwts;
-import io.jsonwebtoken.security.Keys;
+import domain.Certificate;
+import domain.CertificationCenter;
+import domain.SignatureManager;
+import infrastructure.CipherMessage;
+import infrastructure.SignedMessageImpl;
+import jakarta.transaction.Transactional;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.beans.factory.annotation.Value;
-import org.springframework.security.authentication.BadCredentialsException;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
 
-import javax.crypto.SecretKey;
+import java.security.KeyPair;
+import java.security.NoSuchAlgorithmException;
+import java.security.spec.InvalidKeySpecException;
 import java.time.Instant;
-import java.util.Date;
-import java.util.UUID;
 
 @Service
 public class AuthService {
 
     private final UserRepository userRepository;
-    private final RefreshTokenRepository refreshTokenRepository;
     private final PasswordEncoder passwordEncoder;
-    private final long refreshTokenExpirationS;
-    private final long accessTokenExpirationS;
 
-    private final SecretKey secretKey;
 
     private final ObjectMapper objectMapper;
+    private final SignatureManager signatureManager;
+    private final CertificationCenter certificationCenter;
+    private final KeyPair keyPair;
 
     @Autowired
     public AuthService(
             UserRepository userRepository,
-            RefreshTokenRepository refreshTokenRepository,
             PasswordEncoder passwordEncoder,
-            ObjectMapper objectMapper,
-            @Value("${jwt.secret}") String secret,
-            @Value("${jwt.refresh-token-expiration-s}") long refreshTokenExpirationS,
-            @Value("${jwt.access-token-expiration-s}") long accessTokenExpirationS
+            CertificationCenter certificationCenter,
+            KeyPair keyPair,
+            SignatureManager signatureManager,
+            ObjectMapper objectMapper
     ) {
         this.userRepository = userRepository;
-        this.refreshTokenRepository = refreshTokenRepository;
         this.passwordEncoder = passwordEncoder;
-        this.refreshTokenExpirationS = refreshTokenExpirationS;
-        this.accessTokenExpirationS = accessTokenExpirationS;
-        this.secretKey = Keys.hmacShaKeyFor(secret.getBytes());
         this.objectMapper = objectMapper;
+        this.signatureManager = signatureManager;
+        this.certificationCenter = certificationCenter;
+        this.keyPair = keyPair;
+        signatureManager.setSignKey(keyPair.getPrivate());
     }
 
-    public void register(RegisterDTO registerDto) {
+    @Transactional
+    public CertificateDTO[] register(RegisterDTO registerDto) throws NoSuchAlgorithmException, InvalidKeySpecException {
         if (userRepository.findOneByName(registerDto.userName()).isPresent())
             throw new IllegalArgumentException("Username is already taken");
         User user = new User(0, registerDto.userName(), passwordEncoder.encode(registerDto.password()), registerDto.email(), registerDto.role());
         userRepository.save(user);
+        Certificate certificate = certificationCenter.issueCertificate(user.getName(), registerDto.genPublicKey());
+        CertificateDTO newCertificateDTO = new CertificateDTO(certificate);
+        Certificate centerCertificate = certificationCenter.getCertificate("AuthService");
+        CertificateDTO centerCertificateDTO = new CertificateDTO(centerCertificate);
+        return new CertificateDTO[]{newCertificateDTO, centerCertificateDTO};
+    }
+
+    public SignedMessageDTO<CertificateDTO> getCertificate(String name) throws JsonProcessingException {
+        CertificateDTO certificateDTO = new CertificateDTO(certificationCenter.getCertificate(name));
+        SignedMessageImpl<CertificateDTO> certificateDTOSignedMessage = new SignedMessageImpl<>(certificateDTO, signatureManager.getSignAlg(), signatureManager.getParameters());
+        certificateDTOSignedMessage.setSign(signatureManager.sign(objectMapper.writeValueAsBytes(certificateDTO)));
+        return new SignedMessageDTO<>(certificateDTOSignedMessage);
+    }
+
+    public byte[] decryptAndVerify(CipherMessageDTO cipherMessageDTO) throws NoSuchAlgorithmException, InvalidKeySpecException {
+        CipherMessage cipherMessage = cipherMessageDTO.getCipherMessage();
+        byte[] decrypted = cipherMessage.decrypt(keyPair.getPrivate());
+        if (!signatureManager.verify(decrypted, cipherMessage.getSign(), cipherMessage.getCertificate().getPublicKey())) {
+            throw new SecurityException("Sign not valid");
+        }
+        return decrypted;
+    }
+
+    public <T> CipherMessageDTO sendCipherMessage(UserDTO receiver, T data) throws JsonProcessingException, NoSuchAlgorithmException, InvalidKeySpecException {
+        byte[] message = objectMapper.writeValueAsBytes(data);
+        CipherMessageDTO cipherMessageDTO = new CipherMessageDTO(new CipherMessage(certificationCenter.getCertificate("AuthService"), receiver.getCertificateDTO().getCertificate().getPublicKey(), message, signatureManager.sign(message), signatureManager.getSignAlg(), signatureManager.getParameters(), "AES", "RSA/ECB/OAEPWithSHA-256AndMGF1Padding", "AES/CBC/PKCS5Padding"));
+        return cipherMessageDTO;
+    }
+
+    public UserDTO loadUserDTOByName(String name) throws NoSuchAlgorithmException, InvalidKeySpecException {
+        return new UserDTO(userRepository.findOneByName(name).orElseThrow(() -> new RuntimeException("User not found")));
     }
 
     @Transactional
-    public TokensDTO authenticate(LoginDTO loginDto) throws JsonProcessingException {
-        User user = userRepository.findOneByName(loginDto.userName())
-                .orElseThrow(() -> new IllegalArgumentException("User not found"));
-        if (!passwordEncoder.matches(loginDto.password(), user.getPassword())) {
-            throw new BadCredentialsException("Invalid password");
-        }
-        String accessToken = generateAccessToken(new UserDTO(user));
-        RefreshToken refreshToken = createRefreshToken(user);
-        return new TokensDTO(accessToken, refreshToken.getToken());
+    public void revokeCertificate(SignedMessageDTO<String> signedMessage) {
+        // Удаляется и пользователь
+        certificationCenter.revokeCertificate(signedMessage.getSignedMessage());
     }
 
-    private RefreshToken createRefreshToken(User user) {
-        RefreshToken token = new RefreshToken(null, UUID.randomUUID().toString(), user, Instant.now(), Instant.now().plusSeconds(refreshTokenExpirationS), false);
-        return refreshTokenRepository.save(token);
-    }
-
-    @Transactional
-    public TokensDTO refreshToken(String requestRefreshToken) throws JsonProcessingException {
-        RefreshToken refreshToken = refreshTokenRepository.findByToken(requestRefreshToken)
-                .orElseThrow(() -> new IllegalArgumentException("Refresh token not found"));
-        if (refreshToken.isRevoked()) {
-            throw new IllegalArgumentException("Refresh token is revoked");
-        }
-        if (refreshToken.getExpiresAt().isBefore(Instant.now())) {
-            refreshTokenRepository.delete(refreshToken);
-            refreshToken = createRefreshToken(refreshToken.getUser());
-        }
-        String newAccessToken = generateAccessToken(new UserDTO(refreshToken.getUser()));
-        return new TokensDTO(newAccessToken, refreshToken.getToken());
-    }
-
-    public void revokeToken(String requestRefreshToken) {
-        RefreshToken storedToken = refreshTokenRepository.findByToken(requestRefreshToken)
-                .orElseThrow(() -> new IllegalArgumentException("Refresh token not found"));
-        storedToken.setRevoked(true);
-        refreshTokenRepository.save(storedToken);
-    }
-
-    public String generateAccessToken(UserDTO userDTO) throws JsonProcessingException {
-        Date now = new Date();
-        Date expiryDate = new Date(now.getTime() + accessTokenExpirationS * 1000);
-        return Jwts.builder().issuedAt(now).expiration(expiryDate).subject(objectMapper.writeValueAsString(userDTO)).signWith(this.secretKey).compact();
-    }
-
-    public UserDTO parseToken(String token) throws JsonProcessingException {
-        return objectMapper.readValue(Jwts.parser().verifyWith(secretKey).build().parseSignedClaims(token).getPayload().getSubject(), UserDTO.class);
+    public SignedMessageDTO<VerifyResponseDTO> verifyCertificate(CertificateDTO certificateDTO) throws NoSuchAlgorithmException, InvalidKeySpecException, JsonProcessingException {
+        boolean isValid = certificationCenter.unsecureVerifyCertificate(certificateDTO.getCertificate());
+        VerifyResponseDTO verifyResponseDTO = new VerifyResponseDTO(certificateDTO, isValid, Instant.now());
+        SignedMessageDTO<VerifyResponseDTO> result = new SignedMessageDTO<>(verifyResponseDTO);
+        result.setSign(signatureManager.sign(objectMapper.writeValueAsBytes(verifyResponseDTO)));
+        result.setSignAlg(signatureManager.getSignAlg());
+        result.setSignProperties(signatureManager.getParameters());
+        return result;
     }
 }

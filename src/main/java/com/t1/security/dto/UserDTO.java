@@ -6,6 +6,8 @@ import com.t1.security.entity.User;
 import org.springframework.security.core.GrantedAuthority;
 import org.springframework.security.core.userdetails.UserDetails;
 
+import java.security.NoSuchAlgorithmException;
+import java.security.spec.InvalidKeySpecException;
 import java.util.Collection;
 import java.util.Set;
 
@@ -16,16 +18,18 @@ public class UserDTO implements UserDetails {
     private Set<Role> roles;
     @JsonIgnore
     private String password;
+    private CertificateDTO certificateDTO;
 
     public UserDTO() {
     }
 
-    public UserDTO(User user) {
+    public UserDTO(User user) throws NoSuchAlgorithmException, InvalidKeySpecException {
         this.id = user.getId();
         this.name = user.getName();
         this.email = user.getEmail();
         this.roles = user.getRoles();
         this.password = user.getPassword();
+        this.certificateDTO = new CertificateDTO(user.getAuthCertificate().getCertificate());
     }
 
     public String getEmail() {
@@ -79,5 +83,13 @@ public class UserDTO implements UserDetails {
 
     public void setPassword(String password) {
         this.password = password;
+    }
+
+    public CertificateDTO getCertificateDTO() {
+        return certificateDTO;
+    }
+
+    public void setCertificateDTO(CertificateDTO certificateDTO) {
+        this.certificateDTO = certificateDTO;
     }
 }

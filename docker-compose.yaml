@@ -1,4 +1,4 @@
-name: t1-auth
+name: t1-auth-cert
 services:
   postgres:
     image: postgres:latest
@@ -15,15 +15,55 @@ services:
       timeout: 5s
       retries: 10
 
-  auth:
+  postgres_test:
+    image: postgres:latest
+    container_name: postgres_container_test
+    environment:
+      POSTGRES_DB: security_test
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: root
+    ports:
+      - "5433:5432"
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U postgres" ]
+      interval: 2s
+      timeout: 5s
+      retries: 10
+
+  test:
+    build:
+      context: .
+      target: builder
+    container_name: test-auth
+    depends_on:
+      postgres_test:
+        condition: service_healthy
+    environment:
+      - DB_URL_TEST=postgres_test:5432/security_test
+      - SIGN_ALG:RSASSA-PSS
+      - KEY_GEN-ALG:AES
+      - KEY_PAIR_GEN_ALG:RSA
+      - KEY_SIZE:2048
+      - ASYMMETRIC_ALG:RSA/ECB/OAEPWithSHA-256AndMGF1Padding
+      - SYMMETRIC_ALG:AES/CBC/PKCS5Padding
+    ports:
+      - "8080:8080"
+    command: mvn test
+
+  cert-auth:
     build: .
-    container_name: auth
+    container_name: cert-auth
     depends_on:
       postgres:
         condition: service_healthy
     environment:
       - DB_URL=postgres:5432/security
-      - JWT_SECRET=L5l+pVRV3DZPNWXtkRkhYmZcFMuZTfIvAItkwBbY
+      - SIGN_ALG:RSASSA-PSS
+      - KEY_GEN-ALG:AES
+      - KEY_PAIR_GEN_ALG:RSA
+      - KEY_SIZE:2048
+      - ASYMMETRIC_ALG:RSA/ECB/OAEPWithSHA-256AndMGF1Padding
+      - SYMMETRIC_ALG:AES/CBC/PKCS5Padding
     ports:
       - "8080:8080"
     command: java -jar app.jar
