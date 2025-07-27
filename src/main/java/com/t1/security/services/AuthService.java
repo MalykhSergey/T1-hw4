@@ -20,6 +20,8 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import javax.crypto.SecretKey;
+import java.security.PrivateKey;
+import java.security.PublicKey;
 import java.time.Instant;
 import java.util.Date;
 import java.util.UUID;
@@ -33,9 +35,11 @@ public class AuthService {
     private final long refreshTokenExpirationS;
     private final long accessTokenExpirationS;
 
-    private final SecretKey secretKey;
-
     private final ObjectMapper objectMapper;
+
+    private final PublicKey publicKey;
+    private final PrivateKey privateKey;
+    private final SecretKey encryptionKey;
 
     @Autowired
     public AuthService(
@@ -45,15 +49,19 @@ public class AuthService {
             ObjectMapper objectMapper,
             @Value("${jwt.secret}") String secret,
             @Value("${jwt.refresh-token-expiration-s}") long refreshTokenExpirationS,
-            @Value("${jwt.access-token-expiration-s}") long accessTokenExpirationS
+            @Value("${jwt.access-token-expiration-s}") long accessTokenExpirationS,
+            PublicKey publicKey,
+            PrivateKey privateKey
     ) {
         this.userRepository = userRepository;
         this.refreshTokenRepository = refreshTokenRepository;
         this.passwordEncoder = passwordEncoder;
         this.refreshTokenExpirationS = refreshTokenExpirationS;
         this.accessTokenExpirationS = accessTokenExpirationS;
-        this.secretKey = Keys.hmacShaKeyFor(secret.getBytes());
         this.objectMapper = objectMapper;
+        this.encryptionKey = Keys.hmacShaKeyFor(secret.getBytes());
+        this.publicKey = publicKey;
+        this.privateKey = privateKey;
     }
 
     public void register(RegisterDTO registerDto) {
@@ -105,10 +113,14 @@ public class AuthService {
     public String generateAccessToken(UserDTO userDTO) throws JsonProcessingException {
         Date now = new Date();
         Date expiryDate = new Date(now.getTime() + accessTokenExpirationS * 1000);
-        return Jwts.builder().issuedAt(now).expiration(expiryDate).subject(objectMapper.writeValueAsString(userDTO)).signWith(this.secretKey).compact();
+        String encrypted = Jwts.builder().subject(objectMapper.writeValueAsString(userDTO)).encryptWith(this.encryptionKey, Jwts.ENC.A256CBC_HS512).compact();
+        String signed = Jwts.builder().issuedAt(now).expiration(expiryDate).subject(encrypted).signWith(privateKey).compact();
+        return signed;
     }
 
     public UserDTO parseToken(String token) throws JsonProcessingException {
-        return objectMapper.readValue(Jwts.parser().verifyWith(secretKey).build().parseSignedClaims(token).getPayload().getSubject(), UserDTO.class);
+        String signVerified = Jwts.parser().verifyWith(publicKey).build().parseSignedClaims(token).getPayload().getSubject();
+        UserDTO encrypted = objectMapper.readValue(Jwts.parser().decryptWith(encryptionKey).build().parseEncryptedClaims(signVerified).getPayload().getSubject(), UserDTO.class);
+        return encrypted;
     }
 }
