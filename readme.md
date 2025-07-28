@@ -7,13 +7,13 @@
 ## Запуск
 Для запуска системного теста:
 ```shell
-doccker compose up test
+docker compose up test
 ```
 
 Для запуска сервиса (при его сборке прогоняются тесты библиотеки):
 
 ```shell
-doccker compose up cert-auth
+docker compose up cert-auth
 ```
 
 Сервис требует библиотеки (https://github.com/MalykhSergey/T1-hw5/tree/master). В docker это учтено.
