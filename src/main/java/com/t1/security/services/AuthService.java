@@ -72,6 +72,9 @@ public class AuthService {
 
     public byte[] decryptAndVerify(CipherMessageDTO cipherMessageDTO) throws NoSuchAlgorithmException, InvalidKeySpecException {
         CipherMessage cipherMessage = cipherMessageDTO.getCipherMessage();
+        if(!certificationCenter.unsecureVerifyCertificate(cipherMessage.getCertificate())){
+            throw  new SecurityException("Unknown certificate in cipher message");
+        }
         byte[] decrypted = cipherMessage.decrypt(keyPair.getPrivate());
         if (!signatureManager.verify(decrypted, cipherMessage.getSign(), cipherMessage.getCertificate().getPublicKey())) {
             throw new SecurityException("Sign not valid");
