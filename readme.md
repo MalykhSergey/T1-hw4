@@ -128,6 +128,34 @@ MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAkHtKRGWQd5Goa9RldxIVZPBHMx8AW828n8+z
     }
 ```
 
+Аутентификация пользователя, как и ранее выполняется в фильтре Spring security. Однако теперь также после
+этого фильтра подменяется тело запроса, чтобы контроллеры получали уже дешифрованные и проверенные данные.
+
+```java
+public class AuthTokenFilter extends OncePerRequestFilter {
+    @Override
+    protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response, FilterChain filterChain)
+            throws ServletException, IOException {
+        try {
+            if (request.getHeader("SecuredMessageProtocol") != null) {
+                CipherMessageDTO cipherMessageDTO = objectMapper.readValue(request.getInputStream().readAllBytes(), CipherMessageDTO.class);
+                byte[] decrypted = authService.decryptAndVerify(cipherMessageDTO);
+                UserDTO user = authService.loadUserDTOByName(cipherMessageDTO.getCertificateDTO().getSubjectName());
+                UsernamePasswordAuthenticationToken authentication = new UsernamePasswordAuthenticationToken(
+                        user, null, user.getRoles());
+                SecurityContextHolder.getContext().setAuthentication(authentication);
+                request = new DecryptedHttpServletRequest(request, decrypted);
+            }
+
+        } catch (Exception e) {
+            logger.error("Cannot set user authentication: {}", e.getMessage());
+        }
+
+        filterChain.doFilter(request, response);
+    }
+}
+```
+
 ## Примечание
 
 1. Сервис является *доказательством идеи* системы безопасного общения на основе сертификатов.
